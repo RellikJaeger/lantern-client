@@ -1,5 +1,5 @@
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:flutter_windows_webview/flutter_windows_webview.dart';
+import 'package:webview_windows/webview_windows.dart';
 import 'package:lantern/common/common.dart';
 import 'package:lantern/common/ui/app_loading_dialog.dart';
 
@@ -93,6 +93,9 @@ class AppBrowser extends InAppBrowser {
   }
 
   static Future<void> openWindowsWebview(String url) async {
-    FlutterWindowsWebview().launchWebview(url);
+    final webviewController = WebviewController();
+    await webviewController.initialize();
+    await webviewController.setBackgroundColor(Colors.transparent);
+    await webviewController.loadUrl(url);
   }
 }
