@@ -380,7 +380,7 @@ class _CheckoutState extends State<Checkout>
       );
 
       context.loaderOverlay.hide();
-      openDesktopWebview(
+      await openDesktopWebview(
           context: context,
           provider: provider,
           redirectUrl: redirectUrl,
