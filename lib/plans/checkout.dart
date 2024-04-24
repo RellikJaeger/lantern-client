@@ -4,6 +4,8 @@ import 'package:lantern/common/common_desktop.dart';
 import 'package:lantern/plans/payment_provider.dart';
 import 'package:lantern/plans/plan_details.dart';
 import 'package:lantern/plans/utils.dart';
+import "package:webview_windows/webview_windows.dart" as webview2;
+import "package:window_manager/window_manager.dart";
 
 @RoutePage(name: 'Checkout')
 class Checkout extends StatefulWidget {
@@ -22,6 +24,8 @@ class Checkout extends StatefulWidget {
 
 class _CheckoutState extends State<Checkout>
     with SingleTickerProviderStateMixin {
+  bool? _isWebView2Available;
+  late final webview2.WebviewController _windowsWebviewController;
   bool showMoreOptions = false;
   bool showContinueButton = false;
   final emailFieldKey = GlobalKey<FormState>();
@@ -56,6 +60,7 @@ class _CheckoutState extends State<Checkout>
 
   @override
   void initState() {
+    _initWebView();
     animationController =
         AnimationController(vsync: this, duration: longAnimationDuration);
     animationController.repeat(reverse: true);
@@ -67,8 +72,67 @@ class _CheckoutState extends State<Checkout>
     super.initState();
   }
 
+  Future<void> _initWebView() async {
+    /*if (Platform.isWindows) {
+      Size loginWindowSize = const Size(860, 620);
+      await WindowManager.instance.setMinimumSize(loginWindowSize);
+      await WindowManager.instance.setMaximumSize(loginWindowSize);
+      await WindowManager.instance.setSize(loginWindowSize);
+    }*/
+
+    if (Platform.isWindows) {
+      await _initWindowsWebview();
+    }
+  }
+
+  /*Future<void> _setupWebView2() async {
+    Client httpClient = Client();
+    Directory cacheDir = await getApplicationCacheDirectory();
+    File setupFile = File("${cacheDir.path}\\MicrosoftEdgeWebview2Setup.exe");
+    Response res = await httpClient.get(Uri.parse(Config.evergreenBootstrapperUrl));
+    await setupFile.writeAsBytes(res.bodyBytes);
+    await Process.run(setupFile.path, []);
+    await setupFile.delete();
+  }*/
+
+  Widget? _getWindowsWebview() {
+      if (_isWebView2Available == null) {
+        return const Center(child: CircularProgressIndicator(),);
+      }
+      if (_isWebView2Available!) {
+        return webview2.Webview(
+          _windowsWebviewController
+        );
+      }
+      return null;
+    }
+
+  Future<void> _initWindowsWebview() async {
+    if (await webview2.WebviewController.getWebViewVersion() == null) {
+      setState(() {
+        _isWebView2Available = false;
+      });
+      return;
+    } else {
+      _isWebView2Available = true;
+    }
+
+    _windowsWebviewController = webview2.WebviewController();
+
+    await _windowsWebviewController.initialize();
+
+    await _windowsWebviewController.clearCache();
+    await _windowsWebviewController.clearCookies();
+
+    if (mounted) setState(() {});
+  }
+
+
   @override
   void dispose() {
+    if (Platform.isWindows) {
+      _windowsWebviewController.dispose();
+    }
     animationController.dispose();
     super.dispose();
   }
@@ -99,6 +163,9 @@ class _CheckoutState extends State<Checkout>
                 ),
                 child: Column(
                   children: [
+                    if (Platform.isWindows) webview2.Webview(
+                      _windowsWebviewController
+                    ),
                     // * Step 2
                     PlanStep(
                       stepNum: '2',
@@ -380,11 +447,15 @@ class _CheckoutState extends State<Checkout>
       );
 
       context.loaderOverlay.hide();
-      await openDesktopWebview(
+      if (Platform.isWindows) {
+        await _windowsWebviewController.loadUrl(redirectUrl);
+      } else {
+        await openDesktopWebview(
           context: context,
           provider: provider,
           redirectUrl: redirectUrl,
           onClose: checkProUser);
+      }
     } catch (error, stackTrace) {
       context.loaderOverlay.hide();
       showError(context, error: error, stackTrace: stackTrace);
