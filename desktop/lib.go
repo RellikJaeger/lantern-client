@@ -91,6 +91,13 @@ func start() {
 		}
 	}()
 
+	go func() {
+		err := fetchPayentMethodV4()
+		if err != nil {
+			log.Error(err)
+		}
+	}()
+
 	logging.EnableFileLogging(common.DefaultAppName, appdir.Logs(common.DefaultAppName))
 
 	go func() {
@@ -108,11 +115,12 @@ func start() {
 	}()
 
 	golog.SetPrepender(logging.Timestamped)
+	handleSignals(a)
 
 	go func() {
 		defer logging.Close()
 		i18nInit(a)
-		runApp(a)
+		a.Run(true)
 
 		err := a.WaitForExit()
 		if err != nil {
@@ -128,23 +136,48 @@ func fetchOrCreate() error {
 	settings := a.Settings()
 	userID := settings.GetUserID()
 	if userID == 0 {
-		resp, err := proClient.UserCreate(context.Background())
+		user, err := proClient.UserCreate(context.Background())
 		if err != nil {
 			return errors.New("Could not create new Pro user: %v", err)
 		}
-		settings.SetUserIDAndToken(resp.User.UserId, resp.User.Token)
+		log.Debugf("DEBUG: User created: %v", user)
+		if user.BaseResponse != nil && user.BaseResponse.Error != "" {
+			return errors.New("Could not create new Pro user: %v", err)
+		}
+		settings.SetUserIDAndToken(user.UserId, user.Token)
+		// if the user is new mean we need to fetch the payment methods
+		fetchPayentMethodV4()
 	}
+	return nil
+}
+func fetchPayentMethodV4() error {
+	settings := a.Settings()
+	userID := settings.GetUserID()
+	if userID == 0 {
+		return errors.New("User ID is not set")
+	}
+	resp, err := proClient.PaymentMethodsV4(context.Background())
+	if err != nil {
+		return errors.New("Could not get payment methods: %v", err)
+	}
+	// log.Debugf("DEBUG: Payment methods logos: %v providers %v  and plans in string %v", resp.Logo, resp.Providers, resp.Plans)
+	bytes, err := json.Marshal(resp)
+	if err != nil {
+		return errors.New("Could not marshal payment methods: %v", err)
+	}
+	settings.SetPaymentMethodPlans(bytes)
+
 	return nil
 }
 
 //export sysProxyOn
 func sysProxyOn() {
-	a.SysproxyOn()
+	go a.SysproxyOn()
 }
 
 //export sysProxyOff
 func sysProxyOff() {
-	a.SysProxyOff()
+	go a.SysProxyOff()
 }
 
 //export selectedTab
@@ -169,22 +202,49 @@ func setSelectTab(ttab *C.char) {
 
 //export plans
 func plans() *C.char {
-	resp, err := proClient.Plans(context.Background())
-	if err != nil {
-		return sendError(errors.New("error fetching plans: %v", err))
+	settings := a.Settings()
+	plans := settings.GetPaymentMethods()
+	if plans == nil {
+		return sendError(errors.New("plans not found"))
 	}
-	b, _ := json.Marshal(resp.Plans)
-	return C.CString(string(b))
+	paymentMethodsResponse := &proclient.PaymentMethodsResponse{}
+	err := json.Unmarshal(plans, paymentMethodsResponse)
+	plansByte, err := json.Marshal(paymentMethodsResponse.Plans)
+	if err != nil {
+		return sendError(errors.New("error fetching payment methods: %v", err))
+	}
+	return C.CString(string(plansByte))
 }
 
-//export paymentMethods
-func paymentMethods() *C.char {
+//export paymentMethodsV3
+func paymentMethodsV3() *C.char {
 	resp, err := proClient.PaymentMethods(context.Background())
 	if err != nil {
 		return sendError(errors.New("error fetching payment methods: %v", err))
 	}
 	b, _ := json.Marshal(resp.Providers)
 	return C.CString(string(b))
+}
+
+//export paymentMethodsV4
+func paymentMethodsV4() *C.char {
+	settings := a.Settings()
+	plans := settings.GetPaymentMethods()
+	if plans == nil {
+		return sendError(errors.New("Payment methods not found"))
+	}
+	paymentMethodsResponse := &proclient.PaymentMethodsResponse{}
+	err := json.Unmarshal(plans, paymentMethodsResponse)
+	if err != nil {
+		return sendError(err)
+	}
+	b, _ := json.Marshal(paymentMethodsResponse)
+	return C.CString(string(b))
+}
+
+func cachedUserData() (*protos.User, bool) {
+	uc := userConfig(a.Settings())
+	return app.GetUserDataFast(context.Background(), uc.GetUserID())
 }
 
 func getUserData() (*protos.User, error) {
@@ -199,9 +259,39 @@ func getUserData() (*protos.User, error) {
 	return user, nil
 }
 
+// tryCacheUserData retrieves the latest user data for the given user.
+// It first checks the cache and if present returns the user data stored there
+func tryCacheUserData() (*protos.User, error) {
+	if cacheUserData, isOldFound := cachedUserData(); isOldFound {
+		return cacheUserData, nil
+	}
+	return getUserData()
+}
+
+// this method is reposible for checking if the user has updated plan or bought plans
+//
+//export hasPlanUpdatedOrBuy
+func hasPlanUpdatedOrBuy() *C.char {
+	//Get the cached user data
+	log.Debugf("DEBUG: Checking if user has updated plan or bought new plan")
+	cacheUserData, isOldFound := cachedUserData()
+	//Get latest user data
+	resp, err := proClient.UserData(context.Background())
+	if err != nil {
+		return sendError(err)
+	}
+	if isOldFound {
+		if cacheUserData.Expiration < resp.User.Expiration {
+			// New data has a later expiration
+			return C.CString(string("true"))
+		}
+	}
+	return C.CString(string("false"))
+}
+
 //export devices
 func devices() *C.char {
-	user, err := getUserData()
+	user, err := tryCacheUserData()
 	if err != nil {
 		return sendError(err)
 	}
@@ -244,7 +334,7 @@ func removeDevice(deviceId *C.char) *C.char {
 
 //export expiryDate
 func expiryDate() *C.char {
-	user, err := getUserData()
+	user, err := tryCacheUserData()
 	if err != nil {
 		return sendError(err)
 	}
@@ -356,6 +446,13 @@ func lang() *C.char {
 //export setSelectLang
 func setSelectLang(lang *C.char) {
 	a.SetLanguage(C.GoString(lang))
+	// update the payment methods if the language is changed
+	go func() {
+		err := fetchPayentMethodV4()
+		if err != nil {
+			log.Error(err)
+		}
+	}()
 }
 
 //export country
@@ -396,7 +493,7 @@ func acceptedTermsVersion() *C.char {
 func proUser() *C.char {
 	ctx := context.Background()
 	// refresh user data when home page is loaded on desktop
-	go proClient.UserData(ctx)
+	go getUserData()
 	uc := a.Settings()
 	if isProUser, ok := app.IsProUserFast(ctx, uc); isProUser && ok {
 		return C.CString("true")
@@ -433,6 +530,11 @@ func paymentRedirect(planID, currency, provider, email, deviceName *C.char) *C.c
 		return sendError(err)
 	}
 	return sendJson(resp)
+}
+
+//export exitApp
+func exitApp() {
+	a.Exit(nil)
 }
 
 //export developmentMode
@@ -558,12 +660,6 @@ func configDir(flags *flashlight.Flags) string {
 	return cdir
 }
 
-func runApp(a *app.App) {
-	// Schedule cleanup actions
-	handleSignals(a)
-	a.Run(true)
-}
-
 // useOSLocale detect OS locale for current user and let i18n to use it
 func useOSLocale() (string, error) {
 	userLocale, err := jibber_jabber.DetectIETF()
@@ -607,6 +703,7 @@ func handleSignals(a *app.App) {
 	go func() {
 		s := <-c
 		log.Debugf("Got signal \"%s\", exiting...", s)
+		a.Exit(nil)
 	}()
 }
 
