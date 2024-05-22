@@ -252,6 +252,14 @@ jobs:
         version: ${{ needs.set-version.outputs.version }}
         prefix: ${{ needs.set-version.outputs.prefix }}
       steps:
+        - name: Install s3cmd
+          run: pip install s3cmd
+
+        - name: Set s3cmd permissions
+          run: |
+            echo "[default]" > "$HOME/.s3cfg"
+            echo "access_key = ${{ secrets.AWS_ACCESS_KEY }}" >> "$HOME/.s3cfg"
+            echo "secret_key = ${{ secrets.AWS_SECRET_KEY }}" >> "$HOME/.s3cfg"
         - name: Download the mac build output
           uses: actions/download-artifact@v4
           with:
@@ -303,10 +311,18 @@ jobs:
           run: |
             shasum -a 256 ${{ env.prefix }}.apk | cut -d " " -f 1 > ${{ env.prefix }}.apk.sha256
             shasum -a 256 ${{ env.prefix }}.aab | cut -d " " -f 1 > ${{ env.prefix }}.aab.sha256
-            shasum -a 256 ${{ env.prefix }}-mac.dmg | cut -d " " -f 1 > ${{ env.prefix }}-mac.dmg.sha256
-            shasum -a 256 ${{ env.prefix }}-mac_arm.dmg | cut -d " " -f 1 > ${{ env.prefix }}-mac_arm.dmg.sha256
+            shasum -a 256 ${{ env.prefix }}.dmg | cut -d " " -f 1 > ${{ env.prefix }}.dmg.sha256
             shasum -a 256 ${{ env.prefix }}-x64.exe | cut -d " " -f 1 > ${{ env.prefix }}-x64.exe.sha256
             shasum -a 256 ${{ env.prefix }}-64-bit.deb | cut -d " " -f 1 > ${{ env.prefix }}-64-bit.deb.sha256
+        - name: Push binaries to s3
+          run: |
+            s3cmd put --acl-public ${{ env.prefix }}.apk ${{ env.prefix }}.apk.sha256 "s3://$S3_BUCKET"
+            s3cmd put --acl-public ${{ env.prefix }}.aab ${{ env.prefix }}.aab.sha256 "s3://$S3_BUCKET"
+            s3cmd put --acl-public ${{ env.prefix }}-64-bit.deb ${{ env.prefix }}-64-bit.deb.sha256 "s3://$S3_BUCKET"
+            s3cmd put --acl-public ${{ env.prefix }}-x64.exe ${{ env.prefix }}-x64.exe.sha256  "s3://$S3_BUCKET"
+            s3cmd put --acl-public ${{ env.prefix }}.dmg ${{ env.prefix }}.dmg.sha256 "s3://$S3_BUCKET"
+            s3cmd modify --add-header='content-type':'application/vnd.android.package-archive' "s3://$S3_BUCKET/${{ env.prefix }}.apk"
+            s3cmd modify --add-header='content-type':'application/vnd.android.package-archive' "s3://$S3_BUCKET/${{ env.prefix }}.aab"
         - name: Commit
           run: |
             mv lantern-installer* ./lantern-binaries/
